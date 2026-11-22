@@ -1,0 +1,27 @@
+[Unit]
+Description=HydroOJ Tunnel Agent (outbound-only long-poll)
+Documentation=file:///%d/tunnel-agent/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 改成你的实际路径
+WorkingDirectory=/opt/tunnel-agent
+ExecStart=/usr/bin/python3 /opt/tunnel-agent/agent.py
+Environment=TUNNEL_AGENT_CONFIG=/opt/tunnel-agent/config.json
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=2
+# 别抢判题机的 CPU：HydroOJ 的 judge 优先级更高
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+# 出站连接较多，放宽文件描述符
+LimitNOFILE=8192
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hydro-tunnel-agent
+
+[Install]
+WantedBy=multi-user.target

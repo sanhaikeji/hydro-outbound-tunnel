@@ -1,0 +1,18 @@
+# 真实凭据（绝不上传）
+LOCAL.md
+deploy.env
+tunnel-relay/config.json
+tunnel-agent/config.json
+
+# 运行产物
+__pycache__/
+*.pyc
+*.log
+*.pid
+test/
+*.genie
+
+# 编辑器 / 系统
+.vscode/
+.DS_Store
+Thumbs.db

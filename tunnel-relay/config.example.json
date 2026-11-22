@@ -1,0 +1,24 @@
+{
+  "port": 3000,
+  "defaultSite": "hydro",
+  "maxBodyBytes": 8388608,
+  "inlineBodyBytes": 262144,
+  "maxQueue": 2048,
+  "maxBatch": 64,
+  "pullWaitMs": 25000,
+  "requestTimeoutMs": 20000,
+  "orphanGraceMs": 4000,
+  "ackTimeoutMs": 900,
+  "noAgentGraceMs": 500,
+  "noAgentDeadMs": 1500,
+  "agentSilenceMs": 3000,
+  "cacheMaxBytes": 209715200,
+  "cacheTtlMs": 300000,
+  "sites": {
+    "hydro": {
+      "name": "校内 HydroOJ",
+      "token": "<至少16字符的随机字符串，与 agent 保持一致>",
+      "expectedHost": ""
+    }
+  }
+}
