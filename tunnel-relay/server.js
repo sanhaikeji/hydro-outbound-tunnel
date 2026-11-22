@@ -33,9 +33,11 @@ const HOP_BY_HOP = new Set([
   'proxy-authorization', 'proxy-connection', 'trailer',
 ])
 
-const CACHEABLE_TYPE = /^(text\/css|text\/javascript|application\/javascript|image\/|font\/|application\/font|application\/x-font)/
+// 缓存白名单必须从严：命中后请求不再进 Hydro，也就绕过了 Hydro 的登录检查。
+// 只允许明确公开的静态前缀；upload / 附件 / 「任意扩展名」一律不缓存。
+const CACHEABLE_PATH = /^\/(?:static|components|public)\//
 
-const CACHEABLE_PATH = /^\/(static|components|upload|public)\/|\.[a-z0-9]{2,5}(\?|$)/i
+const CACHEABLE_TYPE = /^(?:text\/css|text\/javascript|application\/javascript|image\/(?:png|jpe?g|gif|svg\+xml|webp|avif|x-icon)|font\/|application\/(?:font|wasm|x-font))/
 
 function loadConfig() {
   const p = process.env.TUNNEL_CONFIG || path.join(__dirname, 'config.json')
@@ -170,6 +172,17 @@ function tokenOk(site, supplied) {
   return crypto.timingSafeEqual(a, b)
 }
 
+// 诊断接口专用鉴权：只认 agent 手里那把 token，放在 x-tunnel-token 头里。
+// 不能用 sharecode —— 学生手里也有它，挡不住任何人。
+function isAdmin(req) {
+  const supplied = req.headers['x-tunnel-token']
+  if (typeof supplied !== 'string') return false
+  for (const id of Object.keys(sites)) {
+    if (tokenOk(sites[id], supplied)) return true
+  }
+  return false
+}
+
 function readBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
     const chunks = []
@@ -197,6 +210,8 @@ function filterReqHeaders(headers) {
     if (HOP_BY_HOP.has(lk)) continue
     if (lk === 'host') continue
     if (lk === 'content-length') continue
+    // 隧道自己的管理头不能透到 OJ：既避免泄露部署细节，也防止有人拿它当鉴权凭据试探。
+    if (lk === 'x-tunnel-token' || lk === 'x-tunnel-via') continue
     // 统一让上游返回明文,避免压缩/缓存两层不一致
     if (lk === 'accept-encoding') continue
     if (lk === 'x-forwarded-for' || lk === 'x-real-ip') continue
@@ -425,14 +440,28 @@ function cacheKey(req) {
 function isCacheable(req) {
   if (req.method !== 'GET') return false
   if (req.headers.range) return false
-  return true
+  // 缓存键里没有 Cookie / Authorization。带这两种头的请求，响应可能跟用户有关，
+  // 一旦缓存就会把 A 的私有内容发给 B —— 必须整条跳过缓存。
+  if (req.headers.cookie || req.headers.authorization) return false
+  let pathname
+  try {
+    pathname = new URL(req.url, 'http://relay.local').pathname
+  } catch (e) {
+    return false
+  }
+  return CACHEABLE_PATH.test(pathname)
 }
 
 function shouldStore(key, entry) {
   if (entry.status !== 200) return false
-  const ct = String((entry.headers && entry.headers['content-type']) || '')
-  if (CACHEABLE_TYPE.test(ct)) return true
-  return CACHEABLE_PATH.test(key.slice(4))
+  const h = entry.headers || {}
+  // 带 Set-Cookie 说明响应有会话语义；Vary 里提到凭据也说明响应因用户而异。
+  if (h['set-cookie'] || h['set-cookie2']) return false
+  if (/\b(cookie|authorization|\*)\b/i.test(String(h.vary || ''))) return false
+  if (/\b(private|no-store|no-cache)\b/i.test(String(h['cache-control'] || ''))) return false
+  const ct = String(h['content-type'] || '')
+  // 不再用「路径像静态」兜底：必须 content-type 也是明确的静态类型。
+  return CACHEABLE_TYPE.test(ct)
 }
 
 function dashboard(site) {
@@ -741,18 +770,23 @@ const server = http.createServer((req, res) => {
     return res.end()
   }
 
+  // 诊断接口只允许拿 agent token 的运维访问。
+  // /_hdr 已彻底删除：它把网关塞进来的 Authorization: Bearer <space JWT> 和 Cookie
+  // 原样回显，学生打开这个路径就能拿到平台凭据。真实 IP 改为在 /_stats 里看计数、
+  // 或在 agent 日志里看，不再提供任何回显原始请求头的公网接口。
   if (url.pathname === '/_stats') {
+    if (!isAdmin(req)) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+      return res.end('Not Found')
+    }
     const out = {}
     for (const id of Object.keys(sites)) out[id] = sites[id].stats
     return writeJson(res, 200, out)
   }
 
-  // 诊断用：把网关这一跳实际看到的头部原样回显，用来确认真实 IP 是否还在。
   if (url.pathname === '/_hdr') {
-    return writeJson(res, 200, {
-      socketRemoteAddress: req.socket.remoteAddress,
-      headers: req.headers,
-    })
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+    return res.end('Not Found')
   }
 
   if (url.pathname.startsWith('/c/')) {
@@ -764,7 +798,7 @@ const server = http.createServer((req, res) => {
 
   const site = defaultSite
 
-  if (url.pathname === '/' && req.method === 'GET') {
+  if (url.pathname === '/' && req.method === 'GET' && isAdmin(req)) {
     if (!site.configured || (site.waiters.length === 0 && site.stats.requests === 0)) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       return res.end(dashboard(site))

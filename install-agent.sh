@@ -44,7 +44,10 @@ find_python() {
 }
 
 write_files() {
-  install -d -m 755 "$DIR"
+  # 目录与密钥文件收紧：token 存在 config.json 里，644 会让同机其他账号读到，
+  # 拿到 token 就能注册假 agent 把学生流量劫走。服务以 root 运行，600/750 不影响它读。
+  install -d -m 750 "$DIR"
+  chmod 750 "$DIR" 2>/dev/null || true
 
   cat > "$DIR/agent.py" <<'AGENT_PY'
 #!/usr/bin/env python3
@@ -439,7 +442,7 @@ CFG = DEFAULTS
 if __name__ == "__main__":
     main()
 AGENT_PY
-  chmod 755 "$DIR/agent.py"
+  chmod 750 "$DIR/agent.py"
 
   cat > "$DIR/config.json" <<EOF
 {
@@ -457,7 +460,7 @@ AGENT_PY
   "verbose": false
 }
 EOF
-  chmod 644 "$DIR/config.json"
+  chmod 600 "$DIR/config.json"
 }
 
 write_service() {
@@ -586,7 +589,8 @@ do_status() {
     tail -n 20 "$DIR/agent.log" 2>/dev/null || true
   fi
   say ""
-  say "中转状态：$RELAY_URL/_stats?sharecode=$SHARECODE"
+  say "中转状态（需 agent token，勿外传）："
+  say "  curl -s -H 'x-tunnel-token: $TOKEN' '$RELAY_URL/_stats'"
 }
 
 do_logs() {

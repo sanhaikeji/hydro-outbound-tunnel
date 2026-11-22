@@ -36,10 +36,10 @@ HUSTOJ 换成 HydroOJ 后，以下三点是硬约束，实现里已处理：
 | `GET /c/body/<rid>` | agent → 中转 | 取大请求体（>256KB 不走 JSON 内联） |
 | `POST /c/resp/<rid>` | agent → 中转 | 回传响应；元信息在 `X-Resp-Meta`（base64 JSON），body 走原始字节 |
 | `ANY /*` | 学生 → 中转 | 入队等待，超时 504 / 队列满 503 |
-| `GET /_stats` | 运维 | JSON 统计 |
-| `GET /` | 运维 | 状态页面（agent 离线或未配置时才显示） |
+| `GET /_stats` | 运维 | JSON 统计，需 `X-Tunnel-Token` |
+| `GET /` | 学生 / 运维 | 正常代理到 Hydro；带 `X-Tunnel-Token` 且 agent 离线时才显示状态页 |
 
-所有 `/c/*` 都要求 `X-Tunnel-Token`，用 `timingSafeEqual` 比对。
+所有 `/c/*` 以及诊断接口都要求 `X-Tunnel-Token`，用 `timingSafeEqual` 比对。
 
 ## 关键行为
 
@@ -157,7 +157,7 @@ journalctl -u tunnel-agent -f
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 首页一直显示状态页 | `token` 是占位符，或 agent 从未连上 | 改 config 重启两端 |
-| 全站 503 但 `_stats` 里 `responses` 在涨 | agent 在跑但本地 Hydro 没起 | 查 `local_port`、`journalctl -u hydro` |
+| 全站 503 但 `_stats`（带 token 访问）里 `responses` 在涨 | agent 在跑但本地 Hydro 没起 | 查 `local_port`、`journalctl -u hydro` |
 | 登录后跳回 `http://` | `forwarded_proto` 没生效 | 确认 agent config 里是 `https` |
 | 图片 403 / Referer 校验失败 | Hydro 的 CSRF/Referer 白名单还写着旧域名 | 在 Hydro 配置里加中转域名 |
 | 全班被判同一 IP | `XFF` 没透传 | 确认中转没被前置 CDN 覆盖掉真实源 IP；必要时改 `trust proxy` 层数 |
@@ -176,11 +176,36 @@ journalctl -u tunnel-agent -f
 4. **沙箱无数据库/无持久化。** 中转状态全在进程内存，重启即清空统计与缓存。这是设计选择，
    不是缺陷 —— 但别指望它存历史。
 
-## 诊断端点
+## 诊断端点（已收紧，2026-11-22）
 
-| 端点 | 用途 |
-|---|---|
-| `GET /_stats` | 各项计数（请求/响应/超时/拒绝/缓存命中/字节数） |
-| `GET /_hdr` | 回显网关这一跳实际传来的全部头部 —— 用来确认真实 IP、排查串头 |
-| `GET /` | 状态页；agent 离线或 token 未配置时才显示 |
+| 端点 | 用途 | 鉴权 |
+|---|---|---|
+| `GET /_stats` | 各项计数（请求/响应/超时/拒绝/缓存命中/字节数） | **必须**带 `x-tunnel-token: <agent token>`，否则 404 |
+| `GET /_hdr` | **已删除**，恒返回 404 | — |
+| `GET /` | 状态页，仅 agent 离线或 token 未配置时显示 | **必须**带 `x-tunnel-token`，否则走正常代理转发给 Hydro |
+
+`/_hdr` 原来的设计是把网关这一跳看到的头部原样回显，用来确认真实 IP。但云沙箱网关会给
+每个请求塞 `Authorization: Bearer <space JWT>` 和 `Cookie`，原样回显等于把平台凭据送给
+任何打开这个路径的学生。转发给 Hydro 的路径本来就会剥掉这类头（`filterReqHeaders`），
+诊断路径却漏了 —— 已彻底删除，不再提供任何回显原始请求头的公网接口。
+
+**注意 `sharecode` 不能当鉴权**：学生手里也有它，挡不住任何人。诊断接口只认 agent token。
+
+调用示例：
+
+```bash
+curl -s -H 'x-tunnel-token: <agent token>' https://<中转域名>/_stats
+```
+
+## 缓存边界（已收紧，2026-11-22）
+
+缓存命中后请求**不再进 Hydro**，因此也绕过了 Hydro 的登录检查 —— 白名单必须从严：
+
+- 只缓存路径以 `/static/`、`/components/`、`/public/` 开头，且响应 `Content-Type`
+  是明确静态类型（css/js/图片/字体/wasm）的 200 响应。
+- **不缓存** `/upload/`、`/d/`、附件、任意带扩展名的地址（旧版本按「任意扩展名」缓存，
+  会把前一个用户的私有附件直接发给后一个人）。
+- **不缓存**带 `Cookie` / `Authorization` 的请求，也不缓存带 `Set-Cookie`、
+  `Vary: Cookie`、`Cache-Control: private/no-store` 的响应。
+- 带 `Range` 的请求一律不缓存。
 
