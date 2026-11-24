@@ -5,6 +5,7 @@ const http = require('http')
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
+const zlib = require('zlib')
 
 const DEFAULTS = {
   port: 3000,
@@ -606,8 +607,17 @@ async function handleControl(req, res, url) {
     } catch (e) {
       return writeJson(res, 400, { error: 'bad_meta' })
     }
-    const body = await readBody(req, cfg.maxBodyBytes).catch(() => null)
+    let body = await readBody(req, cfg.maxBodyBytes).catch(() => null)
     if (body === null) return writeJson(res, 413, { error: 'body_too_large' })
+    // 云沙箱 WAF 会扫描 POST body，真实网页里的 <script> 等特征会被拦成 403。
+    // agent 先 gzip 压缩绕过扫描，这里解压还原。头缺失时按原始 body 处理，兼容旧 agent。
+    if (String(req.headers['x-resp-encoding'] || '') === 'gzip') {
+      try {
+        body = zlib.gunzipSync(body)
+      } catch (e) {
+        return writeJson(res, 400, { error: 'bad_gzip' })
+      }
+    }
     site.bodies.delete(rid)
     site.stats.responses++
     site.stats.bytesIn += body.length

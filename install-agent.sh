@@ -55,6 +55,7 @@ write_files() {
 """OJ 端隧道 agent —— 全程只发出站请求，不接受任何入站连接。"""
 
 import base64
+import gzip
 import http.client
 import json
 import os
@@ -131,6 +132,10 @@ def load_cfg():
         cfg["public_host"] = u.netloc
     cfg["_sc"] = ("sharecode=" + quote(str(cfg["sharecode"]), safe="")) if cfg["sharecode"] else ""
     return cfg
+
+
+def pack_body(payload):
+    return gzip.compress(payload, 6)
 
 
 def with_sc(cfg, path):
@@ -309,10 +314,11 @@ def forward_one(item, cfg, resp_pool, ref_pool):
         for attempt in range(cfg["max_retry"]):
             try:
                 st, _r, _h, data = resp_pool.request(
-                    "POST", path_resp, body=payload,
+                    "POST", path_resp, body=pack_body(payload),
                     headers={
                         "x-tunnel-token": cfg["token"],
                         "x-resp-meta": meta,
+                        "x-resp-encoding": "gzip",
                         "content-type": "application/octet-stream",
                     },
                 )
@@ -332,9 +338,9 @@ def forward_one(item, cfg, resp_pool, ref_pool):
             ).decode("ascii")
             resp_pool.request(
                 "POST", with_sc(cfg, "%s/c/resp/%s" % (cfg["_base"], rid)),
-                body="隧道转发失败：OJ 端无法连接本地服务。".encode("utf-8"),
+                body=pack_body("隧道转发失败：OJ 端无法连接本地服务。".encode("utf-8")),
                 headers={"x-tunnel-token": cfg["token"], "x-resp-meta": meta,
-                         "content-type": "application/octet-stream"},
+                         "x-resp-encoding": "gzip", "content-type": "application/octet-stream"},
             )
         except Exception:
             pass
